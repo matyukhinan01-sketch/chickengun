@@ -36,10 +36,11 @@ jobs:
           sdkmanager "platform-tools" "platforms;android-34" "build-tools;34.0.0"
 
       - name: Build APK (debug)
-        working-directory: ./android
+        env:
+          ANDROID_HOME: /usr/local/lib/android/sdk
         run: |
-          chmod +x ./gradlew 2>/dev/null || true
-          ./gradlew assembleDebug --no-daemon --no-configuration-cache
+          cd android
+          gradle assembleDebug --no-daemon --no-configuration-cache --stacktrace
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
