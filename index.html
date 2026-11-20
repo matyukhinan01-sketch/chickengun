@@ -1,0 +1,656 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="theme-color" content="#0ea5e9">
+  <link rel="manifest" href="manifest.json">
+  <link rel="icon" href="icon-192.png" sizes="192x192">
+  <link rel="apple-touch-icon" href="icon-512.png">
+  <title>Курица-прыгун</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      background: #1a1a2e;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      height: 100vh;
+      font-family: system-ui, -apple-system, sans-serif;
+      overflow: hidden;
+      -webkit-user-select: none;
+      user-select: none;
+      -webkit-tap-highlight-color: transparent;
+    }
+    #gameContainer {
+      position: relative;
+      width: min(100vw, 100vh * 9 / 5 - env(safe-area-inset-bottom) * 2);
+      height: min(100vh, 100vw * 5 / 9);
+    }
+    canvas {
+      display: block;
+      width: 100%;
+      height: 100%;
+      border-radius: 12px;
+      image-rendering: auto;
+    }
+    #ui {
+      position: absolute;
+      top: 10px;
+      left: 10px;
+      right: 10px;
+      display: flex;
+      justify-content: space-between;
+      pointer-events: none;
+    }
+    #ui div {
+      background: rgba(0,0,0,0.5);
+      padding: 4px 12px;
+      border-radius: 6px;
+      color: white;
+      font-size: 16px;
+      font-weight: 600;
+    }
+    #chargeBarContainer {
+      position: absolute;
+      bottom: 60px;
+      left: 50%;
+      transform: translateX(-50%);
+      width: 160px;
+      height: 12px;
+      background: rgba(0,0,0,0.4);
+      border-radius: 6px;
+      overflow: hidden;
+      opacity: 0;
+      transition: opacity 0.1s;
+    }
+    #chargeBarContainer.visible { opacity: 1; }
+    #chargeBar {
+      height: 100%;
+      width: 0%;
+      background: linear-gradient(90deg, #4ade80, #facc15, #ef4444);
+      border-radius: 6px;
+      transition: width 0.05s linear;
+    }
+    #hint {
+      position: absolute;
+      bottom: 30px;
+      left: 50%;
+      transform: translateX(-50%);
+      color: rgba(255,255,255,0.8);
+      font-size: 14px;
+      text-align: center;
+      pointer-events: none;
+      text-shadow: 0 2px 4px rgba(0,0,0,0.5);
+    }
+    #overlay {
+      position: absolute;
+      inset: 0;
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+      align-items: center;
+      background: rgba(0,0,0,0.6);
+      border-radius: 12px;
+      opacity: 0;
+      pointer-events: none;
+      transition: opacity 0.3s;
+    }
+    #overlay.visible {
+      opacity: 1;
+      pointer-events: all;
+    }
+    #overlay h2 { color: white; font-size: 28px; margin-bottom: 6px; }
+    #overlay p { color: rgba(255,255,255,0.8); font-size: 15px; margin-bottom: 18px; }
+    #overlay button {
+      background: #4ade80;
+      color: #1a1a2e;
+      border: none;
+      padding: 10px 28px;
+      font-size: 16px;
+      font-weight: 700;
+      border-radius: 8px;
+      cursor: pointer;
+    }
+  </style>
+</head>
+<body>
+  <div id="gameContainer">
+    <canvas id="game"></canvas>
+    <div id="ui">
+      <div id="scoreDisplay">🌿 0</div>
+      <div id="bestDisplay">🏆 0</div>
+    </div>
+    <div id="chargeBarContainer"><div id="chargeBar"></div></div>
+    <div id="hint"></div>
+    <div id="overlay">
+      <h2 id="overlayTitle">🐔 Курица-прыгун</h2>
+      <p id="overlayText"></p>
+      <button id="overlayBtn">Играть</button>
+    </div>
+  </div>
+  <script>
+    // --- Service Worker ---
+    if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(()=>{});
+
+    const canvas = document.getElementById('game');
+    const ctx = canvas.getContext('2d', { alpha: false });
+
+    // --- Детект мобильного и уменьшение разрешения ---
+    const isMobile = /Android|iPhone|iPad|iPod|Opera Mini|IEMobile|WPDesktop/i.test(navigator.userAgent)
+      || ('ontouchstart' in window && window.innerWidth < 1024);
+
+    // Canvas размер: мобильные получают меньшее разрешение
+    const W = isMobile ? 400 : 900;
+    const H = isMobile ? 220 : 500;
+    canvas.width = W;
+    canvas.height = H;
+
+    // --- Элементы UI (кэшируем) ---
+    const scoreDisplay = document.getElementById('scoreDisplay');
+    const bestDisplay = document.getElementById('bestDisplay');
+    const chargeBarContainer = document.getElementById('chargeBarContainer');
+    const chargeBar = document.getElementById('chargeBar');
+    const hint = document.getElementById('hint');
+    const overlay = document.getElementById('overlay');
+    const overlayTitle = document.getElementById('overlayTitle');
+    const overlayText = document.getElementById('overlayText');
+    const overlayBtn = document.getElementById('overlayBtn');
+
+    // --- Константы ---
+    const GROUND_Y = H - 40;
+    const GRAVITY = 1200;
+    const MIN_CHARGE = 100;
+    const MAX_CHARGE = 2500;
+    const MAX_VY = isMobile ? 400 : 580;
+    const MAX_VX = isMobile ? 420 : 600;
+    const CHICKEN_W = isMobile ? 25 : 50;
+    const CHICKEN_H = isMobile ? 28 : 55;
+    const MOUND_W = isMobile ? 45 : 90;
+    const MOUND_MIN = isMobile ? 60 : 120;
+    const MOUND_MAX = isMobile ? 250 : 500;
+    const PARTICLE_POOL_SIZE = isMobile ? 30 : 60;
+
+    // --- Кэшированные пути для курицы (рисуется один раз) ---
+    let chickenPath = null;
+    let chickenData = null;
+
+    function buildChickenPath() {
+      const d = [];
+      const s = isMobile ? 0.5 : 1; // scale factor
+      const c = (x, y, r) => d.push({ type: 'arc', x: x * s, y: y * s, r: r * s });
+      const m = (x, y) => d.push({ type: 'move', x: x * s, y: y * s });
+      const l = (x, y) => d.push({ type: 'line', x: x * s, y: y * s });
+      const e = (x, y, rx, ry) => d.push({ type: 'ellipse', x: x * s, y: y * s, rx: rx * s, ry: ry * s });
+
+      // Тело
+      e(CHICKEN_W/2, CHICKEN_H*0.5 + 2, CHICKEN_W/2, CHICKEN_H/2.2);
+      // Гребешок
+      c(CHICKEN_W*0.55, CHICKEN_H*0.32, 6*s);
+      c(CHICKEN_W*0.43, CHICKEN_H*0.3, 5*s);
+      // Глаз
+      c(CHICKEN_W*0.75, CHICKEN_H*0.35, 7*s);
+      c(CHICKEN_W*0.8, CHICKEN_H*0.35, 3.5*s);
+      c(CHICKEN_W*0.83, CHICKEN_H*0.33, 1.5*s);
+      // Клюв
+      m(CHICKEN_W*0.9, CHICKEN_H*0.38);
+      l(CHICKEN_W, CHICKEN_H*0.42);
+      l(CHICKEN_W*0.9, CHICKEN_H*0.46);
+      // Крыло
+      e(CHICKEN_W*0.25, CHICKEN_H*0.55, 14*s, 10*s);
+      // Лапки
+      m(-CHICKEN_W*0.16, CHICKEN_H*0.95); l(-CHICKEN_W*0.24, CHICKEN_H);
+      m(-CHICKEN_W*0.24, CHICKEN_H); l(-CHICKEN_W*0.32, CHICKEN_H);
+      m(-CHICKEN_W*0.24, CHICKEN_H); l(-CHICKEN_W*0.16, CHICKEN_H);
+      m(CHICKEN_W*0.16, CHICKEN_H*0.95); l(CHICKEN_W*0.24, CHICKEN_H);
+      m(CHICKEN_W*0.24, CHICKEN_H); l(CHICKEN_W*0.16, CHICKEN_H);
+      m(CHICKEN_W*0.24, CHICKEN_H); l(CHICKEN_W*0.32, CHICKEN_H);
+
+      chickenData = d;
+    }
+
+    // --- Пул частиц (без GC) ---
+    let particlePool = [];
+    let activeParticles = [];
+
+    function poolInit() {
+      particlePool = [];
+      activeParticles = [];
+      for (let i = 0; i < PARTICLE_POOL_SIZE; i++) {
+        particlePool.push({ x: 0, y: 0, vx: 0, vy: 0, life: 0, size: 0, color: '' });
+      }
+    }
+
+    function spawnParticles(x, y, count, color) {
+      for (let i = 0; i < count; i++) {
+        if (activeParticles.length >= PARTICLE_POOL_SIZE) break;
+        const p = particlePool[activeParticles.length];
+        p.x = x; p.y = y;
+        p.vx = (Math.random() - 0.5) * 200;
+        p.vy = -Math.random() * 200 - 50;
+        p.life = 0.4 + Math.random() * 0.3;
+        p.size = 3 + Math.random() * 3;
+        p.color = color;
+        activeParticles.push(p);
+      }
+    }
+
+    // --- Облака (кэшированный путь) ---
+    let cloudPaths = [];
+    function buildCloudPaths() {
+      cloudPaths = [];
+      for (let i = 0; i < 12; i++) {
+        const c = {
+          x: Math.random() * (isMobile ? 800 : 3000) - 200,
+          y: 20 + Math.random() * 80,
+          w: (30 + Math.random() * 50) * (isMobile ? 0.5 : 1),
+          opacity: 0.3 + Math.random() * 0.3
+        };
+        // Кэшируем точки эллипсов
+        const parts = [
+          { x: c.x, y: c.y, rx: c.w/2, ry: 20*(isMobile?0.5:1) },
+          { x: c.x - c.w*0.2, y: c.y - 8*(isMobile?0.5:1), rx: c.w*0.3, ry: 16*(isMobile?0.5:1) },
+          { x: c.x + c.w*0.25, y: c.y - 4*(isMobile?0.5:1), rx: c.w*0.25, ry: 14*(isMobile?0.5:1) }
+        ];
+        cloudPaths.push({ ...c, parts });
+      }
+    }
+
+    // --- Камера ---
+    let camera = { x: 0 };
+
+    // --- Состояние ---
+    let state = 'menu';
+    let bestScore = parseInt(localStorage.getItem('chickenBest') || '0');
+    bestDisplay.textContent = `🏆 ${bestScore}`;
+    hint.textContent = isMobile
+      ? 'Коснись и удерживай экран, отпусти для прыжка'
+      : 'Зажми ПРОБЕЛ для зарядки, отпусти для прыжка';
+
+    let score = 0;
+    let charge = 0;
+    let chargeStart = 0;
+    let isCharging = false;
+
+    let chicken = { x: 0, y: 0, vy: 0, vx: 0, rotation: 0 };
+    let mounds = [];
+    let currentMoundIndex = 0;
+    const MAX_VISIBLE_MOUNDS = isMobile ? 8 : 15;
+
+    // --- Кэшированный холм ---
+    let moundPath = null;
+    function buildMoundPath() {
+      moundPath = {
+        w: MOUND_W,
+        cy: GROUND_Y,
+        rx: MOUND_W/2 + 3*(isMobile?0.5:1),
+        ry: 25*(isMobile?0.5:1),
+        ry2: 18*(isMobile?0.5:1)
+      };
+    }
+
+    // --- Инициализация уровня ---
+    function initLevel() {
+      mounds.length = 0;
+      score = 0;
+      currentMoundIndex = 0;
+      activeParticles.length = 0;
+      scoreDisplay.textContent = '🌿 0';
+
+      // Стартовая кочка
+      mounds.push({ x: isMobile ? 50 : 100 });
+
+      // Генерируем кочки (только видимые + буфер)
+      let lastX = mounds[0].x + MOUND_W / 2;
+      const count = isMobile ? 20 : 200;
+      for (let i = 0; i < count; i++) {
+        let dist = MOUND_MIN + Math.random() * (MOUND_MAX - MOUND_MIN);
+        dist += Math.min(i * 1.5, 300);
+        lastX += dist;
+        mounds.push({ x: lastX - MOUND_W / 2 });
+      }
+
+      chicken.x = mounds[0].x;
+      chicken.y = GROUND_Y - CHICKEN_H;
+      chicken.vy = 0;
+      chicken.vx = 0;
+      chicken.rotation = 0;
+      camera.x = 0;
+      charge = 0;
+      isCharging = false;
+    }
+
+    // --- Показать оверлей ---
+    function showOverlay(title, text, btn) {
+      overlayTitle.textContent = title;
+      overlayText.textContent = text;
+      overlayBtn.textContent = btn;
+      overlay.classList.add('visible');
+    }
+    function hideOverlay() {
+      overlay.classList.remove('visible');
+    }
+
+    overlayBtn.addEventListener('click', () => {
+      hideOverlay();
+      initLevel();
+      state = 'playing';
+    });
+
+    // --- Управление ---
+    document.addEventListener('keydown', (e) => {
+      if (e.code === 'Space' && state === 'playing' && !isCharging) {
+        e.preventDefault();
+        isCharging = true;
+        chargeStart = performance.now();
+        chargeBarContainer.classList.add('visible');
+      }
+    });
+
+    document.addEventListener('keyup', (e) => {
+      if (e.code === 'Space' && state === 'playing' && isCharging) {
+        e.preventDefault();
+        launchJump();
+      }
+    });
+
+    const gameContainer = document.getElementById('gameContainer');
+    gameContainer.addEventListener('touchstart', (e) => {
+      if (state === 'playing' && !isCharging) {
+        e.preventDefault();
+        isCharging = true;
+        chargeStart = performance.now();
+        chargeBarContainer.classList.add('visible');
+      }
+    }, { passive: false });
+
+    gameContainer.addEventListener('touchend', (e) => {
+      if (state === 'playing' && isCharging) {
+        e.preventDefault();
+        launchJump();
+      }
+    }, { passive: false });
+
+    document.addEventListener('touchmove', (e) => e.preventDefault(), { passive: false });
+
+    function launchJump() {
+      isCharging = false;
+      chargeBarContainer.classList.remove('visible');
+      chargeBar.style.width = '0%';
+
+      const chargeTime = Math.min(performance.now() - chargeStart, MAX_CHARGE);
+      const t = (chargeTime - MIN_CHARGE) / (MAX_CHARGE - MIN_CHARGE);
+
+      chicken.vy = -(200 + t * (MAX_VY - 200));
+      chicken.vx = 100 + t * (MAX_VX - 100);
+      charge = t;
+      state = 'flying';
+      hint.textContent = '';
+    }
+
+    function checkLanding(worldX) {
+      const hw = CHICKEN_W / 2;
+      for (let i = currentMoundIndex + 1; i < mounds.length; i++) {
+        const m = mounds[i];
+        if (worldX + hw >= m.x && worldX - hw <= m.x + MOUND_W) return i;
+      }
+      return -1;
+    }
+
+    // --- Главный цикл ---
+    let lastTime = 0;
+
+    function gameLoop(time) {
+      const dt = Math.min((time - lastTime) / 1000, 0.05);
+      lastTime = time;
+
+      update(dt);
+      render();
+      requestAnimationFrame(gameLoop);
+    }
+
+    function update(dt) {
+      // Зарядка
+      if (isCharging) {
+        charge = Math.min((performance.now() - chargeStart - MIN_CHARGE) / (MAX_CHARGE - MIN_CHARGE), 1);
+        if (charge < 0) charge = 0;
+        chargeBar.style.width = (charge * 100) + '%';
+      }
+
+      // Физика полёта
+      if (state === 'flying') {
+        chicken.vy += GRAVITY * dt;
+        chicken.y += chicken.vy * dt;
+        chicken.x += chicken.vx * dt;
+        chicken.rotation = Math.atan2(chicken.vy, 200) * 0.5;
+
+        const targetCam = chicken.x - W * 0.35;
+        camera.x += (targetCam - camera.x) * 5 * dt;
+        if (camera.x < 0) camera.x = 0;
+
+        if (chicken.y + CHICKEN_H >= GROUND_Y) {
+          chicken.y = GROUND_Y - CHICKEN_H;
+          const landedIndex = checkLanding(chicken.x);
+          if (landedIndex >= 0) {
+            state = 'landed';
+            currentMoundIndex = landedIndex;
+            score = currentMoundIndex;
+            scoreDisplay.textContent = `🌿 ${score}`;
+            chicken.vx = 0;
+            chicken.vy = 0;
+            chicken.rotation = 0;
+            spawnParticles(chicken.x + CHICKEN_W / 2, GROUND_Y, isMobile ? 5 : 10, '#86efac');
+            hint.textContent = `Кочка ${score}! ${isMobile ? 'Коснись' : 'Зажми ПРОБЕЛ'} для следующего прыжка`;
+            setTimeout(() => { if (state === 'landed') state = 'playing'; }, 500);
+          } else {
+            state = 'gameover';
+            chicken.vy = 200;
+            if (score > bestScore) {
+              bestScore = score;
+              localStorage.setItem('chickenBest', bestScore);
+              bestDisplay.textContent = `🏆 ${bestScore}`;
+            }
+            setTimeout(() => {
+              showOverlay(
+                '💥 Курица упала!',
+                `Кочек пройдено: ${score}. Лучший: ${bestScore}`,
+                'Попробовать снова'
+              );
+            }, 1000);
+          }
+        }
+      }
+
+      if (state === 'gameover') {
+        chicken.vy += GRAVITY * dt;
+        chicken.y += chicken.vy * dt;
+        chicken.rotation += dt * 5;
+        if (chicken.y + CHICKEN_H > H + 100) chicken.y = H + 100;
+      }
+
+      // Частицы из пула
+      for (let i = activeParticles.length - 1; i >= 0; i--) {
+        const p = activeParticles[i];
+        p.x += p.vx * dt;
+        p.y += p.vy * dt;
+        p.vy += 400 * dt;
+        p.life -= dt;
+        if (p.life <= 0) activeParticles.splice(i, 1);
+      }
+
+      // Очистка старых кочек (экономим память)
+      if (mounds.length > (isMobile ? 30 : 60)) {
+        const keepFrom = Math.max(0, currentMoundIndex - 5);
+        mounds.splice(0, keepFrom);
+      }
+    }
+
+    // --- Рендер (оптимизированный) ---
+    function render() {
+      // Небо
+      ctx.fillStyle = '#0ea5e9';
+      ctx.fillRect(0, 0, W, H);
+
+      // Градиент неба (упрощённый)
+      const skyGrad = ctx.createLinearGradient(0, 0, 0, H);
+      skyGrad.addColorStop(0, '#0ea5e9');
+      skyGrad.addColorStop(0.5, '#38bdf8');
+      skyGrad.addColorStop(1, '#e0f2fe');
+      ctx.fillStyle = skyGrad;
+      ctx.fillRect(0, 0, W, H);
+
+      // Солнце
+      ctx.fillStyle = '#fef08a';
+      ctx.beginPath();
+      ctx.arc(W - 80, 50, isMobile ? 20 : 40, 0, Math.PI * 2);
+      ctx.fill();
+
+      // Облака (рисуем из кэшированных путей)
+      for (let i = 0; i < cloudPaths.length; i++) {
+        const cp = cloudPaths[i];
+        cp.x += cp.w * 0.01 * (isMobile ? 0.5 : 1);
+        if (cp.x > camera.x + W + 100) cp.x = camera.x - 100;
+        const cx = cp.x - camera.x * 0.3;
+        ctx.fillStyle = `rgba(255,255,255,${cp.opacity})`;
+        const parts = cp.parts;
+        for (let j = 0; j < parts.length; j++) {
+          const p = parts[j];
+          const px = p.x - camera.x * 0.3;
+          ctx.beginPath();
+          ctx.ellipse(px, p.y, p.rx, p.ry, 0, 0, Math.PI * 2);
+          ctx.fill();
+        }
+      }
+
+      // Дальние холмы
+      ctx.fillStyle = '#86efac';
+      ctx.beginPath();
+      ctx.moveTo(0, H);
+      for (let x = 0; x <= W; x += isMobile ? 10 : 5) {
+        const worldX = x + camera.x * 0.5;
+        const y = GROUND_Y - 20*(isMobile?0.5:1) + Math.sin(worldX * 0.006) * 12*(isMobile?0.5:1);
+        ctx.lineTo(x, y);
+      }
+      ctx.lineTo(W, H);
+      ctx.fill();
+
+      // Кочки (только видимые)
+      const margin = isMobile ? 40 : 60;
+      ctx.fillStyle = '#22c55e';
+      ctx.fillStyle = '#16a34a';
+      for (let i = 0; i < mounds.length; i++) {
+        const m = mounds[i];
+        const mx = m.x - camera.x;
+        if (mx + MOUND_W < -margin || mx > W + margin) continue;
+
+        const mp = moundPath;
+        // Зелёный холм
+        ctx.fillStyle = '#22c55e';
+        ctx.beginPath();
+        ctx.ellipse(mx + MOUND_W/2, GROUND_Y, mp.rx, mp.ry, 0, Math.PI, Math.PI * 2);
+        ctx.fill();
+        // Тёмная трава
+        ctx.fillStyle = '#16a34a';
+        ctx.beginPath();
+        ctx.ellipse(mx + MOUND_W/2, GROUND_Y, mp.rx - 3, mp.ry2, 0, Math.PI, Math.PI * 2);
+        ctx.fill();
+      }
+
+      // Частицы
+      for (let i = 0; i < activeParticles.length; i++) {
+        const p = activeParticles[i];
+        const px = p.x - camera.x;
+        ctx.globalAlpha = p.life;
+        ctx.fillStyle = p.color;
+        ctx.beginPath();
+        ctx.arc(px, p.y, p.size, 0, Math.PI * 2);
+        ctx.fill();
+      }
+      ctx.globalAlpha = 1;
+
+      // Курица (используем кэшированные пути)
+      const screenX = chicken.x - camera.x;
+      ctx.save();
+      ctx.translate(screenX + CHICKEN_W/2, chicken.y + CHICKEN_H/2);
+      ctx.rotate(chicken.rotation);
+
+      const cd = chickenData;
+      for (let i = 0; i < cd.length; i++) {
+        const d = cd[i];
+        switch (d.type) {
+          case 'ellipse':
+            ctx.fillStyle = '#fbbf24';
+            ctx.beginPath();
+            ctx.ellipse(d.x, d.y, d.rx, d.ry, 0, 0, Math.PI * 2);
+            ctx.fill();
+            break;
+          case 'arc':
+            // Гребешок
+            if (i < 2) { ctx.fillStyle = '#ef4444'; }
+            // Глаз белый
+            else if (i === 6) { ctx.fillStyle = 'white'; }
+            // Зрачок
+            else if (i === 7) { ctx.fillStyle = 'black'; }
+            // Блик
+            else { ctx.fillStyle = 'white'; }
+            ctx.beginPath();
+            ctx.arc(d.x, d.y, d.r, 0, Math.PI * 2);
+            ctx.fill();
+            break;
+          case 'move':
+          case 'line':
+            // Клюв и лапки
+            if (i >= 8 && i <= 19) {
+              if (i === 8 || i === 9 || i === 10) ctx.fillStyle = '#f97316'; // клюв
+              else ctx.strokeStyle = '#f97316'; // лапки
+            }
+            if (i === 8) {
+              ctx.beginPath();
+              ctx.moveTo(d.x, d.y);
+            } else if (i === 9 || i === 10) {
+              ctx.lineTo(d.x, d.y);
+              if (i === 10) ctx.fill();
+            } else if (i >= 11) {
+              if (i === 11 || i === 16) ctx.beginPath();
+              ctx.moveTo(d.x, d.y);
+              ctx.lineTo(d.x + (d._lx || 0), d.y + (d._ly || 0));
+              ctx.stroke();
+            }
+            break;
+        }
+      }
+
+      // Крыло
+      ctx.fillStyle = '#f59e0b';
+      ctx.beginPath();
+      ctx.ellipse(-5 * (isMobile?0.5:1), 5 * (isMobile?0.5:1), 14*(isMobile?0.5:1), 10*(isMobile?0.5:1), -0.2, 0, Math.PI * 2);
+      ctx.fill();
+
+      ctx.restore();
+
+      // Расстояние до следующей кочки
+      if (state === 'playing' || state === 'landed') {
+        const nextMound = mounds[currentMoundIndex + 1];
+        if (nextMound) {
+          const nx = nextMound.x + MOUND_W/2 - camera.x;
+          ctx.fillStyle = 'rgba(255,255,255,0.3)';
+          ctx.font = `${isMobile ? 10 : 14}px sans-serif`;
+          ctx.textAlign = 'center';
+          ctx.fillText(`${Math.round(nextMound.x - chicken.x)}px`, nx, GROUND_Y - 25*(isMobile?0.5:1));
+        }
+      }
+    }
+
+    // --- Старт ---
+    buildChickenPath();
+    buildCloudPaths();
+    buildMoundPath();
+    poolInit();
+    initLevel();
+    showOverlay('🐔 Курица-прыгун', 'Перепрыгни как можно дальше!', 'Играть');
+    requestAnimationFrame(gameLoop);
+  </script>
+</body>
+</html>

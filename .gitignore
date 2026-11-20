@@ -1,0 +1,13 @@
+*.ap_
+*.apk
+*.aab
+build/
+.gradle/
+local.properties
+.idea/
+.caches/
+*.iml
+*.ipr
+*.iws
+.DS_Store
+node_modules/
