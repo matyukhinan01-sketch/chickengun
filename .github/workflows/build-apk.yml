@@ -25,7 +25,15 @@ jobs:
 
       - name: Install Android SDK
         run: |
-          echo "y" | sdkmanager --install "platform-tools" "platforms;android-34" "build-tools;34.0.0" "cmdline-tools;latest"
+          sudo mkdir -p /usr/local/lib/android/sdk
+          export ANDROID_HOME=/usr/local/lib/android/sdk
+          export PATH=$PATH:$ANDROID_HOME/cmdline-tools/latest/bin
+          wget -q https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip -O /tmp/cmdline-tools.zip
+          unzip -q /tmp/cmdline-tools.zip -d /usr/local/lib/android/sdk
+          mv /usr/local/lib/android/sdk/cmdline-tools /usr/local/lib/android/sdk/cmdline-tools-new
+          mv /usr/local/lib/android/sdk/cmdline-tools-new /usr/local/lib/android/sdk/cmdline-tools
+          yes | sdkmanager --licenses >/dev/null 2>&1
+          sdkmanager "platform-tools" "platforms;android-34" "build-tools;34.0.0"
 
       - name: Build APK (debug)
         working-directory: ./android
